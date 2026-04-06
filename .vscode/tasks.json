@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Make",
+            "type": "shell",
+
+            "windows": {
+                "command": "${workspaceFolder}/make.bat",
+                "options": {
+                    "shell": {
+                        "executable": "cmd.exe",
+                        "args": ["/c"]
+                    }
+                }
+            },
+            
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Run Post-Build",
+            "type": "shell",
+            "windows": {
+                "command": "${workspaceFolder}/Testbed/ShaderScripts/win/PostBuild.bat"
+            },
+            "group": "build"
+        }
+    ]
+}

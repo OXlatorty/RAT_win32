@@ -1,0 +1,100 @@
+Folder PATH listing
+Volume serial number is 64F0-9D21
+C:.
+|   .gitignore
+|   AUTHORS
+|   LICENSE
+|   make.bat
+|   README
+|   tree.txt
+|   
++---.vscode
+|       c_cpp_properties.json
+|       keybindings.json
+|       settings.json
+|       tasks.json
+|       
++---Build
+|   +---bin
+|   |   |   Injector.exe
+|   |   |   Injector.pdb
+|   |   |   LoadMe.exe
+|   |   |   LoadMe.pdb
+|   |   |   
+|   |   \---payloads
+|   |           ExampleDLL.dll
+|   |           ExampleDLL.lib
+|   |           ExampleDLL.pdb
+|   |           
+|   +---obj
+|   |   +---ExampleDLL
+|   |   |       dllTools.o
+|   |   |       main.o
+|   |   |       
+|   |   +---Injector
+|   |   |       Injector.o
+|   |   |       
+|   |   \---LoadMe
+|   |           loadder.o
+|   |           tools.o
+|   |           
+|   \---Scripts
+|       |   Makefile.Injector.mak
+|       |   Makefile.LoadMe.mak
+|       |   
+|       \---Payloads
+|               Makefile.ExampleDLL.mak
+|               Makefile.Keylogger.mak
+|               
++---Docs
+|   +---How-It-Works
+|   |   +---Injector
+|   |   |       Injector.cpp.md
+|   |   |       
+|   |   +---LoadMe
+|   |   |       includes.h.md
+|   |   |       loadder.cpp.md
+|   |   |       tools.cpp.md
+|   |   |       tools.h.md
+|   |   |       
+|   |   \---Payloads
+|   |       +---ExampleDLL
+|   |       |       dllTools.cpp.md
+|   |       |       dllTools.h.md
+|   |       |       firstDLL.cpp.md
+|   |       |       
+|   |       \---Keylogger
+|   \---Usage
+|       +---Injector
+|       |       Injector.exe.md
+|       |       
+|       +---LoadMe
+|       |       LoadMe.exe.md
+|       |       
+|       \---Payloads
+|           +---ExampleDLL
+|           \---Keylogger
+\---Source
+    +---Injector
+    |       Injector.cpp
+    |       
+    +---LoadMe
+    |       includes.h
+    |       loadder.cpp
+    |       tools.cpp
+    |       tools.h
+    |       
+    \---Payloads
+        +---ExampleDLL
+        |       dllTools.cpp
+        |       dllTools.h
+        |       main.cpp
+        |       
+        \---Keylogger
+                Includes.h
+                InjectTools.cpp
+                InjectTools.h
+                Keylogger.cpp
+                Keylogger.h
+                main.cpp
+                

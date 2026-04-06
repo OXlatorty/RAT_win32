@@ -1,0 +1,124 @@
+RAT-win32 - README
+
+Copyright (C) 2026 OXlatorty
+
+This project is licensed under the Apache License 2.0.
+
+---
+
+OVERVIEW
+
+RAT-win32 is a low-level Proof of Concept (PoC) demonstrating PE file
+manipulation and process injection techniques on Windows x64.
+The project is written in pure C++/WinAPI to maintain a minimal footprint
+and avoid dependencies on high-level frameworks such as .NET.
+
+---
+
+COMPONENTS
+
+  Injector.exe
+    A CLI tool that appends a new section to an existing PE file and
+    embeds raw source data (e.g. a DLL) directly into the target binary.
+
+  LoadMe.exe
+    A dropper that extracts the embedded payload from its own PE section,
+    writes it to disk, establishes Registry persistence, executes the
+    payload via rundll32.exe, and then self-deletes.
+
+  ExampleDLL.dll
+    The demonstration payload. Resolves its own path on disk, then
+    injects itself into a target process (notepad.exe by default) using
+    Manual Mapping and Process Hollowing.
+
+---
+
+TECHNICAL LOGIC
+
+  1. INJECTION (Injector.exe)
+     Calculates File/Section alignment and writes a new IMAGE_SECTION_HEADER
+     into the target PE. Appends the raw payload bytes and updates
+     NumberOfSections and SizeOfImage in the Optional Header.
+
+  2. EXTRACTION (LoadMe.exe)
+     Parses its own IMAGE_NT_HEADERS at runtime, locates the last section
+     (PE32 and PE32+ are both supported), and returns a pointer to the
+     embedded payload bytes.
+
+  3. HOLLOWING + MANUAL MAP (ExampleDLL.dll / dllTools)
+     Spawns the target process suspended. Reads PEB->ImageBaseAddress via
+     NtQueryInformationProcess, then calls NtUnmapViewOfSection to clear
+     the original image. Allocates a new region, writes PE headers and
+     sections, patches the Relocation Table (IMAGE_REL_BASED_DIR64 only),
+     and resolves the Import Address Table (IAT) entry by entry.
+
+  4. EXECUTION
+     Hijacks the suspended thread via GetThreadContext / SetThreadContext,
+     pointing RIP to a shellcode stub that calls the DLL entry point with
+     the correct x64 ABI arguments before jumping to it.
+
+---
+
+USAGE
+
+  Step 1 - Build all three components from source (x64, MSVC or MinGW).
+
+  Step 2 - Embed the payload DLL into the dropper:
+             Injector.exe .extra LoadMe.exe ExampleDLL.dll
+
+  Step 3 - Run the modified LoadMe.exe on the target system.
+
+  For detailed per-component usage see the Docs/ directory.
+
+---
+
+DOCUMENTATION
+
+  Docs/
+    Injector/
+      Injector.cpp.md       - PE section injection engine
+    LoadMe/
+      loadder.cpp.md        - Dropper entry point and self-deletion
+      tools.cpp.md          - PE parsing and payload extraction
+      tools.h.md            - Tools namespace interface and macros
+      includes.h.md         - Shared header overview
+    ExampleDLL/
+      dllTools.cpp.md       - Manual mapping / hollowing engine
+      dllTools.h.md         - DllTools namespace interface
+      main.cpp.md           - Payload exports and DllMain
+      ExampleDLL.dll.md     - End-to-end usage guide
+
+---
+
+IMPORTANT NOTES
+
+  Architecture   64-bit only. The relocation loop handles IMAGE_REL_BASED_DIR64
+                 exclusively and the shellcode uses the x64 register ABI
+                 (RCX, RDX, R8). Do not target 32-bit processes.
+
+  Detection      Modern AV/EDR solutions may flag WriteProcessMemory,
+                 SetThreadContext, NtUnmapViewOfSection, or the RWX
+                 section characteristics set by Injector.
+
+  Stealth        The manually mapped DLL does not appear in the PEB
+                 InLoadOrderModuleList, so it is invisible to module
+                 enumeration via standard API calls.
+
+  Known issues   - The Registry value name written by LoadMe is a literal
+                   format string instead of a meaningful identifier.
+                   See docs/LoadMe/loadder.cpp.md for the fix.
+                 - IAT patching resolves addresses from the injector's own
+                   address space. See docs/ExampleDLL/dllTools.cpp.md for
+                   the robust remote-base-adjusted approach.
+                 - The export name "fristEntry" is a typo of "firstEntry".
+                   Both LoadMe and ExampleDLL must be recompiled together
+                   if you rename it.
+
+---
+
+DISCLAIMER
+
+This software is intended for educational and research purposes only.
+The techniques demonstrated here are documented in public security
+research. The author accepts no responsibility for any misuse of the
+code or methods described in this project.
