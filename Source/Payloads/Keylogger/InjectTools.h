@@ -6,8 +6,6 @@
 #include <vector>
 #include <iostream>
 #include <psapi.h>
-#pragma comment(lib, "ntdll.lib")
-#pragma comment(lib, "psapi.lib")
 
 using NtUnmapViewOfSection = NTSTATUS(WINAPI*)(HANDLE, PVOID);
 
