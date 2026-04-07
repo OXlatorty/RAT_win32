@@ -178,22 +178,38 @@ int DllTools::AutoInject(LPSTR target, LPCSTR payload) {
     GetThreadContext(processInformation.hThread, &ctx);
 
 	uintptr_t customEntryRVA = GetExportAddress(dllBuffer.data(), "entryPoint");
-	if (customEntryRVA == 0) customEntryRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+    uintptr_t dllMainRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+    if (customEntryRVA == 0) customEntryRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
 
-    // Shellcode wymusza wywołanie DllMain z prawidłowymi parametrami:
-    // RCX = ImageBase (hInstance)
-    // RDX = DLL_PROCESS_ATTACH (1)
-    // R8 = lpvReserved (0)
+    // Shellcode ensures DllMain is called before execution of custom entryPoint.
+    // This is critical for C++ Runtime initialization (e.g., std::ofstream).
     BYTE shellcode[] = {
-		0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, <newBase> (HMODULE)
-		0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,                   // mov rdx, 1 (DLL_PROCESS_ATTACH)
-		0x4D, 0x31, 0xC0,                                           // xor r8, r8 (lpvReserved = 0)
-		0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <entryPoint>
-		0xFF, 0xE0                                                  // jmp rax
-	};
+        0x48, 0x83, 0xEC, 0x28,                                     // sub rsp, 40 (Shadow space + stack alignment)
+        
+        // --- Call DllMain(hinstDLL, DLL_PROCESS_ATTACH, NULL) ---
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, <newBase> (hInstance)
+        0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,                   // mov rdx, 1 (DLL_PROCESS_ATTACH)
+        0x4D, 0x31, 0xC0,                                           // xor r8, r8 (lpvReserved = 0)
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <DllMainAddr>
+        0xFF, 0xD0,                                                 // call rax
+        
+        // --- Call custom entryPoint() ---
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <entryPointAddr>
+        0xFF, 0xD0,                                                 // call rax
+        
+        0x48, 0x83, 0xC4, 0x28,                                     // add rsp, 40 (Restore stack pointer)
+        
+        // --- Return to original execution flow ---
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <OriginalRIP>
+        0xFF, 0xE0                                                  // jmp rax
+    };
 
-    *(uintptr_t*)(shellcode + 2) = (uintptr_t)newBase;
-	*(uintptr_t*)(shellcode + 22) = (uintptr_t)newBase + customEntryRVA;
+    // Patch addresses into the shellcode buffer
+    *(uintptr_t*)(shellcode + 6)  = (uintptr_t)newBase;                // Update rcx with newBase
+    *(uintptr_t*)(shellcode + 26) = (uintptr_t)newBase + dllMainRVA;   // Update rax with DllMain address
+    *(uintptr_t*)(shellcode + 38) = (uintptr_t)newBase + customEntryRVA;// Update rax with entryPoint address
+    *(uintptr_t*)(shellcode + 54) = (uintptr_t)ctx.Rip;                // Update rax with original RIP
+    
     LPVOID scAddr = VirtualAllocEx(targetProcess, NULL, sizeof(shellcode), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     WriteProcessMemory(targetProcess, scAddr, shellcode, sizeof(shellcode), NULL);
 

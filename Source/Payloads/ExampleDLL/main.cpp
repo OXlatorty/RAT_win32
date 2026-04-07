@@ -5,7 +5,7 @@ HMODULE dllParam;
 
 LPSTR targetPath = const_cast<LPSTR>("C:\\Windows\\System32\\notepad.exe");
 
-extern "C" __declspec(dllexport) void fristEntry() {
+extern "C" __declspec(dllexport) void firstEntry() {
 	char dllPath[MAX_PATH];
 
 	DWORD ret = GetModuleFileNameA((HINSTANCE)dllParam, dllPath, MAX_PATH);

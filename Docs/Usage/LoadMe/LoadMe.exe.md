@@ -15,7 +15,7 @@
  
 ### Configuration
  
-**DLL entry point.** The loader is hardcoded to call the exported function `fristEntry` from the dropped DLL (note the lowercase `f`). Ensure your DLL exports a function with exactly that name. To rename it, update the `runningFunctionName` constant in `loadder.cpp` and recompile.
+**DLL entry point.** The loader is hardcoded to call the exported function `firstEntry` from the dropped DLL (note the lowercase `f`). Ensure your DLL exports a function with exactly that name. To rename it, update the `runningFunctionName` constant in `loadder.cpp` and recompile.
  
 **Drop location.** The payload is written to `%APPDATA%\<ticks>.dll`, where `<ticks>` is the current value of `GetTickCount()`. Example: `%APPDATA%\3891204.dll`.
  
@@ -24,9 +24,9 @@
 When the modified `LoadMe.exe` is run, the following steps occur in order:
  
 1. **Extraction** — The embedded DLL is located in the last PE section of `LoadMe.exe` and written to `%APPDATA%\<ticks>.dll`.
-2. **Execution** — A hidden `rundll32.exe` process is spawned to load the DLL and call `fristEntry`:
+2. **Execution** — A hidden `rundll32.exe` process is spawned to load the DLL and call `firstEntry`:
    ```
-   "<WINDIR>\System32\rundll32.exe" "<APPDATA>\<ticks>.dll",fristEntry
+   "<WINDIR>\System32\rundll32.exe" "<APPDATA>\<ticks>.dll",firstEntry
    ```
 3. **Persistence** — A `REG_SZ` value is created under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`. Its data is the full `rundll32.exe` command line, causing the DLL to be executed automatically on every user login.
 4. **Self-deletion** — A hidden `cmd.exe` process deletes `LoadMe.exe` from disk.

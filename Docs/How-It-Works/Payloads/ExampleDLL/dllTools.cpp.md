@@ -191,26 +191,51 @@ Writes the new allocation address back into `PEB->ImageBaseAddress` so that `Get
 ---
 
 #### 12 — Build and inject shellcode
-The injected process's main thread `RIP` is redirected to a small x64 shellcode stub (32 bytes) that:
-
-```asm
-mov rcx, <newBase>       ; HMODULE  (RCX = 1st argument per x64 ABI)
-mov rdx, 1               ; DLL_PROCESS_ATTACH
-xor r8, r8               ; lpvReserved = NULL
-mov rax, <entryPoint>    ; target address
-jmp rax
-```
-
-This ensures the DLL entry point receives the correct calling convention arguments regardless of what state the suspended thread's registers were in.
+The suspended thread's `RIP` is redirected to an x64 shellcode stub (64 bytes) that explicitly calls `DllMain` first, then calls the custom entry point, and finally returns execution to the thread's original `RIP`. This two-call sequence is the key change from the previous single-`jmp` design.
 
 **Entry point selection:**
 ```cpp
 uintptr_t customEntryRVA = GetExportAddress(dllBuffer.data(), "entryPoint");
+uintptr_t dllMainRVA     = ntHeaders->OptionalHeader.AddressOfEntryPoint;
 if (customEntryRVA == 0) customEntryRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
 ```
-If the DLL exports a function named `entryPoint`, it is used as the jump target. Otherwise the standard `AddressOfEntryPoint` (typically `DllMain`) is used.
+Both addresses are resolved before the shellcode is built. `dllMainRVA` always points to `AddressOfEntryPoint`. `customEntryRVA` points to the exported `entryPoint` function, or falls back to `AddressOfEntryPoint` if the export is not found.
 
-The shellcode is allocated via `VirtualAllocEx` with `PAGE_EXECUTE_READWRITE`, written with `WriteProcessMemory`, and set as the thread's `RIP` via `SetThreadContext`. `ResumeThread` then starts execution.
+**Why call `DllMain` explicitly?**
+When the injector manually maps the DLL, the Windows loader never runs — so the C++ runtime is never initialised by the normal loader path. Calling `DllMain(newBase, DLL_PROCESS_ATTACH, NULL)` explicitly through the shellcode triggers CRT initialisation (global constructors, `std::ofstream`, static objects, etc.) before any payload code runs.
+
+**Shellcode layout (64 bytes):**
+```asm
+sub rsp, 40                        ; allocate shadow space (32 bytes) + align stack to 16 bytes
+
+; --- Call DllMain(newBase, DLL_PROCESS_ATTACH, NULL) ---
+mov rcx, <newBase>                 ; RCX = hinstDLL (1st arg, x64 ABI)
+mov rdx, 1                         ; RDX = DLL_PROCESS_ATTACH
+xor r8,  r8                        ; R8  = lpvReserved = NULL
+mov rax, <newBase + dllMainRVA>    ; absolute address of DllMain
+call rax
+
+; --- Call entryPoint() ---
+mov rax, <newBase + customEntryRVA>
+call rax
+
+add rsp, 40                        ; restore stack pointer
+
+; --- Return to original thread execution ---
+mov rax, <original ctx.Rip>
+jmp rax
+```
+
+**Address patching:**
+
+| Shellcode offset | Value written |
+| :--- | :--- |
+| `+6`  | `newBase` (for `mov rcx`) |
+| `+26` | `newBase + dllMainRVA` |
+| `+38` | `newBase + customEntryRVA` |
+| `+54` | `ctx.Rip` saved before `SetThreadContext` |
+
+The shellcode is written into the target via `VirtualAllocEx` (`PAGE_EXECUTE_READWRITE`) + `WriteProcessMemory`. `ctx.Rip` is set to `scAddr`, then `SetThreadContext` and `ResumeThread` start execution.
 
 ---
 
@@ -222,6 +247,9 @@ In `AutoInject`, modify the string passed to `GetExportAddress`:
 uintptr_t customEntryRVA = GetExportAddress(dllBuffer.data(), "YourExportName");
 ```
 Ensure the payload DLL exports a function with exactly that name.
+
+**Skip the explicit `DllMain` call in the shellcode:**
+If your payload does not rely on CRT initialisation and you want a shorter stub, remove the `DllMain` `call` block and the `sub/add rsp` frame, reducing back to a single `jmp` to `customEntryRVA`. Remember to update all byte offsets in the patch lines accordingly.
 
 **Support x86 payloads:**
 - Change relocation patching to handle `IMAGE_REL_BASED_HIGHLOW` with `DWORD`-sized reads/writes.

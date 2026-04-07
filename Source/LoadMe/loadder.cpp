@@ -28,7 +28,7 @@ int DeleteLoadFile() {
 }
 
 INT WINAPI WinMain(HMODULE current, HMODULE previous, LPSTR cmd, INT show) {
-    const LPCWSTR runningFunctionName = L"fristEntry";
+    const LPCWSTR runningFunctionName = L"firstEntry"; // Nazwa uruchamianej funkcji z DLL
     PBYTE moduleBase = PBYTE(Tools::GetImageBase());
 
     if (moduleBase != NULL) {

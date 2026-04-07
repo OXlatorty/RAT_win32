@@ -30,13 +30,13 @@ The GUI-less Windows entry point. Executes the complete payload deployment seque
 
 5. **Command line construction** — expands `%WINDIR%` and builds the launch command:
    ```
-   "<WINDIR>\System32\rundll32.exe" "<APPDATA>\<ticks>.dll",fristEntry
+   "<WINDIR>\System32\rundll32.exe" "<APPDATA>\<ticks>.dll",firstEntry
    ```
    The export name is controlled by the constant `runningFunctionName`:
    ```cpp
-   const LPCWSTR runningFunctionName = L"fristEntry";
+   const LPCWSTR runningFunctionName = L"firstEntry";
    ```
-   > **Note:** `fristEntry` is a typo of `firstEntry`. If you want to rename it, change this constant **and** update the exported function name in your payload DLL accordingly, then recompile both.
+   > **Note:** `firstEntry` is a typo of `firstEntry`. If you want to rename it, change this constant **and** update the exported function name in your payload DLL accordingly, then recompile both.
 
 6. **Payload launch** — spawns `rundll32.exe` with `CREATE_NO_WINDOW` so the process runs invisibly in the background.
 

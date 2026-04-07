@@ -7,7 +7,7 @@ The DLL exports two functions:
 
 | Export | Called by | Purpose |
 | :--- | :--- | :--- |
-| `fristEntry` | LoadMe (`rundll32.exe`) | Resolves the DLL path and triggers self-injection into the target process. |
+| `firstEntry` | LoadMe (`rundll32.exe`) | Resolves the DLL path and triggers self-injection into the target process. |
 | `entryPoint` | `AutoInject` shellcode | Runs inside the injected process; displays the host executable path in a loop. |
 
 ---
@@ -15,7 +15,7 @@ The DLL exports two functions:
 ## Setup
 
 ### 1 — Compile ExampleDLL
-Build `main.cpp` + `dllTools.cpp` as a 64-bit DLL. Ensure the linker exports both `fristEntry` and `entryPoint` (the `extern "C" __declspec(dllexport)` declarations in `main.cpp` handle this automatically with MSVC).
+Build `main.cpp` + `dllTools.cpp` as a 64-bit DLL. Ensure the linker exports both `firstEntry` and `entryPoint` (the `extern "C" __declspec(dllexport)` declarations in `main.cpp` handle this automatically with MSVC).
 
 Required libraries (already declared via `#pragma comment` in `dllTools.h`):
 - `ntdll.lib`
@@ -31,7 +31,7 @@ Injector.exe .extra LoadMe.exe ExampleDLL.dll
 ### 3 — Run the modified LoadMe.exe
 Execute the modified `LoadMe.exe`. The launcher will:
 1. Extract `ExampleDLL.dll` from its own PE body and drop it to `%APPDATA%\<ticks>.dll`.
-2. Launch it via `rundll32.exe`, calling `fristEntry`.
+2. Launch it via `rundll32.exe`, calling `firstEntry`.
 3. Register the `rundll32.exe` command under `HKCU\...\Run` for startup persistence.
 4. Delete itself from disk.
 
@@ -42,9 +42,9 @@ Execute the modified `LoadMe.exe`. The launcher will:
 ```
 LoadMe.exe
   └─ drops ExampleDLL to %APPDATA%\<ticks>.dll
-  └─ rundll32.exe "%APPDATA%\<ticks>.dll",fristEntry
+  └─ rundll32.exe "%APPDATA%\<ticks>.dll",firstEntry
        └─ DllMain called by Windows loader  →  dllParam = HMODULE, wasDllMainCalled = TRUE
-       └─ fristEntry()
+       └─ firstEntry()
             └─ GetModuleFileNameA(dllParam)  →  resolves DLL path on disk
             └─ MessageBoxA  →  shows resolved path (debug confirmation)
             └─ DllTools::AutoInject("notepad.exe", dllPath)
@@ -77,8 +77,8 @@ Recompile and re-embed with `Injector.exe`. The target must be a 64-bit executab
 
 > **IAT resolution uses the injector's address space.** Function addresses for the payload's imports are resolved via `GetProcAddress` in the `rundll32.exe` process, not in the target. This works correctly when both processes load the same DLL versions at the same base addresses (common when ASLR produces the same layout). If imports resolve incorrectly, see the *Fix the IAT remote-address limitation* section in [`dllTools.cpp`](dllTools.cpp.md).
 
-> **Debug message boxes.** `fristEntry` displays a `MessageBoxA` showing the DLL path before injecting. Remove the `wsprintfA` / `MessageBoxA` block in `main.cpp` before using this in a non-interactive or silent context.
+> **Debug message boxes.** `firstEntry` displays a `MessageBoxA` showing the DLL path before injecting. Remove the `wsprintfA` / `MessageBoxA` block in `main.cpp` before using this in a non-interactive or silent context.
 
-> **Export name typo.** The export `fristEntry` is a typo of `firstEntry`. It must match the `runningFunctionName` constant in `loadder.cpp` exactly. See [`main.cpp`](main.cpp.md) and [`loadder.cpp`](../LoadMe/loadder.cpp.md) if you want to rename it.
+> **Export name typo.** The export `firstEntry` is a typo of `firstEntry`. It must match the `runningFunctionName` constant in `loadder.cpp` exactly. See [`main.cpp`](main.cpp.md) and [`loadder.cpp`](../LoadMe/loadder.cpp.md) if you want to rename it.
 
 > **Persistence bug.** The registry value written by LoadMe uses a literal format string as the value name. The DLL command line (the data) is stored correctly. See [`loadder.cpp`](../LoadMe/loadder.cpp.md#WinMain) for the fix.

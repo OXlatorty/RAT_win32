@@ -1,148 +1,224 @@
 #include "InjectTools.h"
 
-
-DWORD ConvertVirtualVirtualAddress2RawAddress(DWORD virtualAddress, LPVOID file) {
-	PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)file;
-	PIMAGE_SECTION_HEADER section = (PIMAGE_SECTION_HEADER)((DWORD)file + dosHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS32));
-
-	while (virtualAddress > section->VirtualAddress + section->Misc.VirtualSize) section++;
-
-	DWORD offset = virtualAddress - section->VirtualAddress;
-	DWORD rawAddress = offset + section->PointerToRawData;
-	return rawAddress;
+uintptr_t RvaToRaw(uintptr_t rva, PIMAGE_NT_HEADERS ntHeaders, LPVOID fileBuffer) {
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeaders);
+    for (WORD i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++) {
+        if (rva >= section->VirtualAddress && rva < (section->VirtualAddress + section->Misc.VirtualSize)) {
+            return (uintptr_t)fileBuffer + section->PointerToRawData + (rva - section->VirtualAddress);
+        }
+        section++;
+    }
+    return 0;
 }
 
-namespace InjectTools {
-	int AutoInject(LPSTR target, LPCSTR payload) {
-		HMODULE hNtDll = GetModuleHandleA("ntdll.dll");
-		LPSTARTUPINFOA startupInfo = new STARTUPINFOA();
-		LPPROCESS_INFORMATION processInformation = new PROCESS_INFORMATION();
-		PROCESS_BASIC_INFORMATION* processBasicInformation = new PROCESS_BASIC_INFORMATION();
+uintptr_t GetExportAddress(LPVOID fileBuffer, const char* exportName) {
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)fileBuffer;
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((uintptr_t)fileBuffer + dosHeader->e_lfanew);
 
-		BOOL processCreated = CreateProcessA(NULL, target, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, startupInfo, processInformation);
-		if (processCreated) {
-			HANDLE targetProcess = processInformation->hProcess;
-			if (targetProcess != INVALID_HANDLE_VALUE) {
-				DWORD returnLength = 0;
-				NtQueryInformationProcess(targetProcess, ProcessBasicInformation, processBasicInformation, sizeof(PROCESS_BASIC_INFORMATION), &returnLength);
+    IMAGE_DATA_DIRECTORY exportDir = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (exportDir.Size == 0) return 0;
 
-				DWORD imageBaseOffset = (DWORD)processBasicInformation->PebBaseAddress + 8;
-				LPVOID destiationImageBase = 0; 
-				SIZE_T bytesRead = NULL; 
-				BOOL processRead = ReadProcessMemory(targetProcess, (LPCVOID)imageBaseOffset, &destiationImageBase, 4, &bytesRead); 
-				if (processRead && destiationImageBase != ERROR) { 
-					HANDLE dllFile = CreateFileA(payload, GENERIC_READ, NULL, NULL, OPEN_ALWAYS, NULL, NULL); 
-					if (dllFile != INVALID_HANDLE_VALUE) { 
-						DWORD dllSize = GetFileSize(dllFile, NULL); 
-						LPDWORD fileBytesRead = 0; 
-						LPVOID dllBuffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dllSize);
-						if (dllBuffer != ERROR) {
-							DWORD ss = 0;
-							BOOL dllRead = ReadFile(dllFile, dllBuffer, dllSize, &ss, NULL);
+    PIMAGE_EXPORT_DIRECTORY exports = (PIMAGE_EXPORT_DIRECTORY)RvaToRaw(exportDir.VirtualAddress, ntHeaders, fileBuffer);
+    DWORD* names = (DWORD*)RvaToRaw(exports->AddressOfNames, ntHeaders, fileBuffer);
+    DWORD* functions = (DWORD*)RvaToRaw(exports->AddressOfFunctions, ntHeaders, fileBuffer);
+    WORD* ordinals = (WORD*)RvaToRaw(exports->AddressOfNameOrdinals, ntHeaders, fileBuffer);
 
-							if (dllRead) {
-								PIMAGE_DOS_HEADER dllImageDosHeader = (PIMAGE_DOS_HEADER)dllBuffer;
-								PIMAGE_NT_HEADERS dllImageNtHeader = (PIMAGE_NT_HEADERS)((DWORD)dllBuffer + dllImageDosHeader->e_lfanew);
-								SIZE_T dllImageSize = dllImageNtHeader->OptionalHeader.SizeOfImage;
+    for (DWORD i = 0; i < exports->NumberOfNames; i++) {
+        const char* name = (const char*)RvaToRaw(names[i], ntHeaders, fileBuffer);
+        if (strcmp(name, exportName) == 0) {
+            return (uintptr_t)functions[ordinals[i]];
+        }
+    }
 
-								NtUnmapViewOfSection unmapSection = (NtUnmapViewOfSection)(GetProcAddress(hNtDll, "NtUnmapViewOfSection"));
+    return 0;
+}
 
-								if (NT_SUCCESS(unmapSection(targetProcess, destiationImageBase))) {
-									LPVOID newDestiationImageBase = VirtualAllocEx(targetProcess, destiationImageBase, dllImageSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-									destiationImageBase = newDestiationImageBase;
+uintptr_t GetRemoteModuleHandle(HANDLE hProcess, const char* moduleName) {
+    HMODULE hMods[1024];
+    DWORD cbNeeded;
+    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            char szModName[MAX_PATH];
+            if (GetModuleBaseNameA(hProcess, hMods[i], szModName, sizeof(szModName))) {
+                if (_stricmp(szModName, moduleName) == 0) {
+                    return (uintptr_t)hMods[i];
+                }
+            }
+        }
+    }
+    return 0;
+}
 
-									DWORD deltaImageBase = (DWORD)destiationImageBase - dllImageNtHeader->OptionalHeader.ImageBase;
-									dllImageNtHeader->OptionalHeader.ImageBase = (DWORD)destiationImageBase;
-									WriteProcessMemory(targetProcess, newDestiationImageBase, dllBuffer, dllImageNtHeader->OptionalHeader.SizeOfHeaders, NULL);
+int InjectTools::AutoInject(LPSTR target, LPCSTR payload) {
+    HMODULE hNtDll = GetModuleHandleA("ntdll.dll");
+    if (!hNtDll) return -1;
 
-									PIMAGE_SECTION_HEADER dllImageSectionHeader = (PIMAGE_SECTION_HEADER)((DWORD)dllBuffer + dllImageDosHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS32));
-									PIMAGE_SECTION_HEADER oldDllImageSectionHeader = dllImageSectionHeader;
+    STARTUPINFOA startupInfo = { sizeof(startupInfo) };
+    PROCESS_INFORMATION processInformation = { 0 };
+    PROCESS_BASIC_INFORMATION pbi = { 0 };
 
-									for (int i = 0; i < dllImageNtHeader->FileHeader.NumberOfSections; i++) {
-										PVOID destinationSectionLocation = (PVOID)((DWORD)destiationImageBase + dllImageSectionHeader->VirtualAddress);
-										PVOID sourceSectionLocation = (PVOID)((DWORD)dllBuffer + dllImageSectionHeader->PointerToRawData);
-										WriteProcessMemory(targetProcess, destinationSectionLocation, sourceSectionLocation, dllImageSectionHeader->SizeOfRawData, NULL);
-										dllImageSectionHeader++;
-									}
+    if (!CreateProcessA(NULL, target, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &startupInfo, &processInformation)) return -1;
+    HANDLE targetProcess = processInformation.hProcess;
 
-									PIMAGE_EXPORT_DIRECTORY imageExportDirectory = (PIMAGE_EXPORT_DIRECTORY)((DWORD)dllBuffer + ConvertVirtualVirtualAddress2RawAddress((DWORD)dllImageNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress, dllBuffer));
-									PDWORD pEAT = (DWORD*)((DWORD)dllBuffer + ConvertVirtualVirtualAddress2RawAddress(imageExportDirectory->AddressOfFunctions, dllBuffer));
+    typedef NTSTATUS(NTAPI* pNtQueryInformationProcess)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
+    auto NtQueryInfo = (pNtQueryInformationProcess)GetProcAddress(hNtDll, "NtQueryInformationProcess");
+    ULONG retLen = 0;
+    NtQueryInfo(targetProcess, ProcessBasicInformation, &pbi, sizeof(pbi), &retLen);
 
-									IMAGE_DATA_DIRECTORY relocationTable = dllImageNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-									dllImageSectionHeader = oldDllImageSectionHeader;
+    HANDLE hFile = CreateFileA(payload, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        TerminateProcess(targetProcess, 0);
+        return -1;
+    }
+    
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    std::vector<BYTE> dllBuffer(fileSize);
+    DWORD read = 0;
+    ReadFile(hFile, dllBuffer.data(), fileSize, &read, NULL);
+    CloseHandle(hFile);
 
-									for (int j = 0; j < dllImageNtHeader->FileHeader.NumberOfSections; j++) {
-										BYTE* relockSectionName = (BYTE*)".reloc";
-										if (memcmp(dllImageSectionHeader->Name, relockSectionName, 5) != 0) {
-											dllImageSectionHeader++;
-											continue;
-										}
-										DWORD sourceRelocationTableRaw = dllImageSectionHeader->PointerToRawData;
-										DWORD relocationOffset = 0;
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)dllBuffer.data();
+    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
+        TerminateProcess(targetProcess, 0);
+        return -1;
+    }
 
-										while (relocationOffset < relocationTable.Size) {
-											PBASE_RELOCATION_BLOCK relocationBlock = (PBASE_RELOCATION_BLOCK)((DWORD)dllBuffer + sourceRelocationTableRaw + relocationOffset);
-											relocationOffset += sizeof(BASE_RELOCATION_BLOCK);
-											DWORD relocationCounts = (relocationBlock->BlockSize - sizeof(BASE_RELOCATION_BLOCK)) / sizeof(BASE_RELOCATION_ENTRY);
-											PBASE_RELOCATION_ENTRY relocationEntries = (PBASE_RELOCATION_ENTRY)((DWORD)dllBuffer + sourceRelocationTableRaw + relocationOffset);
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((uintptr_t)dllBuffer.data() + dosHeader->e_lfanew);
+    uintptr_t remoteImageBasePtr = (uintptr_t)pbi.PebBaseAddress + 0x10;
+    LPVOID remoteImageBase = 0;
+    ReadProcessMemory(targetProcess, (LPCVOID)remoteImageBasePtr, &remoteImageBase, sizeof(LPVOID), NULL);
 
-											for (DWORD a = 0; a < relocationCounts; a++) {
-												relocationOffset += sizeof(BASE_RELOCATION_ENTRY);
-												if (relocationEntries[a].Type == 0) {
-													continue;
-												}
+    typedef NTSTATUS(NTAPI* pNtUnmapViewOfSection)(HANDLE, PVOID);
+    auto unmap = (pNtUnmapViewOfSection)GetProcAddress(hNtDll, "NtUnmapViewOfSection");
+    if (unmap) unmap(targetProcess, remoteImageBase);
 
-												DWORD patchedAddress = relocationBlock->PageAddress + relocationEntries[a].Offset;
-												DWORD patchedBuffer = 0;
+    LPVOID newBase = VirtualAllocEx(targetProcess, remoteImageBase, ntHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!newBase) newBase = VirtualAllocEx(targetProcess, NULL, ntHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!newBase) {
+        TerminateProcess(targetProcess, 0);
+        return -1;
+    }
 
-												ReadProcessMemory(targetProcess, (LPCVOID)((DWORD)destiationImageBase + patchedAddress), &patchedBuffer, sizeof(DWORD), &bytesRead);
-												patchedBuffer += deltaImageBase;
-												WriteProcessMemory(targetProcess, (PVOID)((DWORD)destiationImageBase + patchedAddress), &patchedBuffer, sizeof(DWORD), NULL);
-											}
-										}
-									}
+    uintptr_t delta = (uintptr_t)newBase - ntHeaders->OptionalHeader.ImageBase;
+    ntHeaders->OptionalHeader.ImageBase = (uintptr_t)newBase;
+    WriteProcessMemory(targetProcess, newBase, dllBuffer.data(), ntHeaders->OptionalHeader.SizeOfHeaders, NULL);
 
-									LPCONTEXT context = new CONTEXT();
-									context->ContextFlags = CONTEXT_INTEGER;
-									GetThreadContext(processInformation->hThread, context);
+    PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(ntHeaders);
+    for (int i = 0; i < ntHeaders->FileHeader.NumberOfSections; i++) {
+        if (section->SizeOfRawData > 0) {
+            PVOID dest = (PVOID)((uintptr_t)newBase + section->VirtualAddress);
+            PVOID src = (PVOID)((uintptr_t)dllBuffer.data() + section->PointerToRawData);
+            WriteProcessMemory(targetProcess, dest, src, section->SizeOfRawData, NULL);
+        }
+        section++;
+    }
 
-									BYTE code[] = {
-										0x68, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD,        // push 0xDDDDDDDDDDDDDDDD
-										0x68, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD,        // push 0xDDDDDDDDDDDDDDDD
-										0x68, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD,        // push 0xDDDDDDDDDDDDDDDD
-										0x68, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD,        // push 0xDDDDDDDDDDDDDDDD
-										0x48, 0xB8, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD,  // mov rax, 0xDDDDDDDDDDDDDDDD
-										0xFF, 0xE0                                                   // jmp rax
-									};
+    IMAGE_DATA_DIRECTORY relocDir = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (relocDir.Size > 0 && delta != 0) {
+        uintptr_t relocAddr = RvaToRaw(relocDir.VirtualAddress, ntHeaders, dllBuffer.data());
+        uintptr_t endReloc = relocAddr + relocDir.Size;
 
-									// Ustawianie parametr�w za pomoc� PULONGLONG dla 64-bitowych warto�ci 
-									*((PULONGLONG)(code + 1)) = 0;                                         // 3rd param dla DllMain 
-									*((PULONGLONG)(code + 10)) = 1;                                        // 2nd param dla DllMain 
-									*((PULONGLONG)(code + 19)) = (ULONGLONG)destiationImageBase;           // 1st param dla DllMain 
-									*((PULONGLONG)(code + 28)) = (ULONGLONG)destiationImageBase + pEAT[1]; // Funkcja eksportowana 
-									*((PULONGLONG)(code + 37)) = (ULONGLONG)destiationImageBase + dllImageNtHeader->OptionalHeader.AddressOfEntryPoint; // Punkt wej�cia 
+        while (relocAddr < endReloc) {
+            PIMAGE_BASE_RELOCATION block = (PIMAGE_BASE_RELOCATION)relocAddr;
+            if (block->SizeOfBlock == 0) break;
 
-									// Alokacja pami�ci z poprawnymi flagami
-									LPVOID addressBuffer = VirtualAllocEx(targetProcess, NULL, sizeof(code), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-									if (addressBuffer != NULL) {
-										BOOL success = WriteProcessMemory(targetProcess, addressBuffer, code, sizeof(code), NULL);
-										if (success) {
-											context->Rax = (ULONGLONG)addressBuffer; 
+            DWORD count = (block->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+            PWORD entry = (PWORD)(relocAddr + sizeof(IMAGE_BASE_RELOCATION));
+            for (DWORD i = 0; i < count; i++) {
+                uintptr_t type = entry[i] >> 12;
+                uintptr_t offset = entry[i] & 0xFFF;
+                if (type == IMAGE_REL_BASED_DIR64) {
+                    uintptr_t patchAddr = block->VirtualAddress + offset;
+                    uintptr_t remoteValue = 0;
+                    ReadProcessMemory(targetProcess, (PVOID)((uintptr_t)newBase + patchAddr), &remoteValue, sizeof(uintptr_t), NULL);
+                    remoteValue += delta;
+                    WriteProcessMemory(targetProcess, (PVOID)((uintptr_t)newBase + patchAddr), &remoteValue, sizeof(uintptr_t), NULL);
+                }
+            }
 
-											SetThreadContext(processInformation->hThread, context);
-											ResumeThread(processInformation->hThread);
-										}
-									}
+            relocAddr += block->SizeOfBlock;
+        }
+    }
 
-									return 0;
-								}
-							}
-						}
-					}
-					CloseHandle(dllFile);
+	IMAGE_DATA_DIRECTORY importDir = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	if (importDir.Size > 0) {
+		PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)RvaToRaw(importDir.VirtualAddress, ntHeaders, dllBuffer.data());
+
+		while (importDesc->Name) {
+			const char* libName = (const char*)RvaToRaw(importDesc->Name, ntHeaders, dllBuffer.data());
+			
+			uintptr_t hRemoteLib = GetRemoteModuleHandle(targetProcess, libName);
+			if (!hRemoteLib) hRemoteLib = (uintptr_t)LoadLibraryA(libName); 
+			
+			PIMAGE_THUNK_DATA firstThunk = (PIMAGE_THUNK_DATA)RvaToRaw(importDesc->FirstThunk, ntHeaders, dllBuffer.data());
+			PIMAGE_THUNK_DATA originalFirstThunk = (PIMAGE_THUNK_DATA)RvaToRaw(importDesc->OriginalFirstThunk, ntHeaders, dllBuffer.data());
+
+			while (originalFirstThunk->u1.AddressOfData) {
+				uintptr_t funcAddr = 0;
+				if (IMAGE_SNAP_BY_ORDINAL(originalFirstThunk->u1.Ordinal)) {
+					funcAddr = (uintptr_t)GetProcAddress(GetModuleHandleA(libName), (LPCSTR)IMAGE_ORDINAL(originalFirstThunk->u1.Ordinal));
+				} else {
+					PIMAGE_IMPORT_BY_NAME importByName = (PIMAGE_IMPORT_BY_NAME)RvaToRaw(originalFirstThunk->u1.AddressOfData, ntHeaders, dllBuffer.data());
+					funcAddr = (uintptr_t)GetProcAddress(GetModuleHandleA(libName), importByName->Name);
 				}
+
+				WriteProcessMemory(targetProcess, (LPVOID)((uintptr_t)newBase + importDesc->FirstThunk + ((uintptr_t)firstThunk - (uintptr_t)RvaToRaw(importDesc->FirstThunk, ntHeaders, dllBuffer.data()))), &funcAddr, sizeof(uintptr_t), NULL);
+
+				firstThunk++;
+				originalFirstThunk++;
 			}
-			CloseHandle(targetProcess);
+			importDesc++;
 		}
 	}
+
+    WriteProcessMemory(targetProcess, (PVOID)remoteImageBasePtr, &newBase, sizeof(LPVOID), NULL);
+
+    CONTEXT ctx;
+    ctx.ContextFlags = CONTEXT_FULL;
+    GetThreadContext(processInformation.hThread, &ctx);
+
+	uintptr_t customEntryRVA = GetExportAddress(dllBuffer.data(), "entryPoint");
+    uintptr_t dllMainRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+    if (customEntryRVA == 0) customEntryRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+
+    // Shellcode ensures DllMain is called before execution of custom entryPoint.
+    // This is critical for C++ Runtime initialization (e.g., std::ofstream).
+    BYTE shellcode[] = {
+        0x48, 0x83, 0xEC, 0x28,                                     // sub rsp, 40 (Shadow space + stack alignment)
+        
+        // --- Call DllMain(hinstDLL, DLL_PROCESS_ATTACH, NULL) ---
+        0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, <newBase> (hInstance)
+        0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,                   // mov rdx, 1 (DLL_PROCESS_ATTACH)
+        0x4D, 0x31, 0xC0,                                           // xor r8, r8 (lpvReserved = 0)
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <DllMainAddr>
+        0xFF, 0xD0,                                                 // call rax
+        
+        // --- Call custom entryPoint() ---
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <entryPointAddr>
+        0xFF, 0xD0,                                                 // call rax
+        
+        0x48, 0x83, 0xC4, 0x28,                                     // add rsp, 40 (Restore stack pointer)
+        
+        // --- Return to original execution flow ---
+        0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <OriginalRIP>
+        0xFF, 0xE0                                                  // jmp rax
+    };
+
+    // Patch addresses into the shellcode buffer
+    *(uintptr_t*)(shellcode + 6)  = (uintptr_t)newBase;                // Update rcx with newBase
+    *(uintptr_t*)(shellcode + 26) = (uintptr_t)newBase + dllMainRVA;   // Update rax with DllMain address
+    *(uintptr_t*)(shellcode + 38) = (uintptr_t)newBase + customEntryRVA;// Update rax with entryPoint address
+    *(uintptr_t*)(shellcode + 54) = (uintptr_t)ctx.Rip;                // Update rax with original RIP
+
+    LPVOID scAddr = VirtualAllocEx(targetProcess, NULL, sizeof(shellcode), MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    WriteProcessMemory(targetProcess, scAddr, shellcode, sizeof(shellcode), NULL);
+
+    ctx.Rip = (uintptr_t)scAddr;
+    SetThreadContext(processInformation.hThread, &ctx);
+    ResumeThread(processInformation.hThread);
+
+    CloseHandle(processInformation.hThread);
+    CloseHandle(processInformation.hProcess);
+
+    return 0;
 }

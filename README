@@ -110,9 +110,6 @@ IMPORTANT NOTES
                  - IAT patching resolves addresses from the injector's own
                    address space. See docs/ExampleDLL/dllTools.cpp.md for
                    the robust remote-base-adjusted approach.
-                 - The export name "fristEntry" is a typo of "firstEntry".
-                   Both LoadMe and ExampleDLL must be recompiled together
-                   if you rename it.
 
 ---
 
